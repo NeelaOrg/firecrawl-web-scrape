@@ -416,6 +416,133 @@ function coerceFieldsToFormats(meta: Meta, document: Document): Document {
   return document;
 }
 
+type MarkdownSection = {
+  heading: string;
+  markdown: string;
+};
+
+function splitMarkdownByHeadings(
+  markdown: string,
+  fallbackHeading: string,
+): MarkdownSection[] {
+  const lines = markdown.split(/\r?\n/);
+  const headings: Array<{ startLine: number; heading: string }> = [];
+
+  let inFence = false;
+  let fenceMarker = "";
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fenceMatch = line.match(/^(\s*)(`{3,}|~{3,})/);
+    if (fenceMatch) {
+      const marker = fenceMatch[2][0];
+      if (!inFence) {
+        inFence = true;
+        fenceMarker = marker;
+      } else if (marker === fenceMarker) {
+        inFence = false;
+        fenceMarker = "";
+      }
+      continue;
+    }
+
+    if (inFence) {
+      continue;
+    }
+
+    const atxMatch = line.match(/^(#{1,2})\s+(.+?)\s*#*\s*$/);
+    if (atxMatch) {
+      headings.push({
+        startLine: i,
+        heading: atxMatch[2].trim() || fallbackHeading,
+      });
+      continue;
+    }
+
+    const setextMatch = line.match(/^\s*(=+|-+)\s*$/);
+    if (setextMatch && i > 0) {
+      const previousLine = lines[i - 1];
+      if (previousLine.trim().length > 0) {
+        headings.push({
+          startLine: i - 1,
+          heading: previousLine.trim() || fallbackHeading,
+        });
+      }
+    }
+  }
+
+  const uniqueHeadings: Array<{ startLine: number; heading: string }> = [];
+  const seenStarts = new Set<number>();
+  for (const heading of headings) {
+    if (!seenStarts.has(heading.startLine)) {
+      seenStarts.add(heading.startLine);
+      uniqueHeadings.push(heading);
+    }
+  }
+  uniqueHeadings.sort((a, b) => a.startLine - b.startLine);
+
+  if (uniqueHeadings.length === 0) {
+    return [
+      {
+        heading: fallbackHeading,
+        markdown,
+      },
+    ];
+  }
+
+  const sections: MarkdownSection[] = [];
+  const firstStart = uniqueHeadings[0].startLine;
+  if (firstStart > 0) {
+    const preface = lines.slice(0, firstStart).join("\n");
+    if (preface.trim().length > 0) {
+      sections.push({
+        heading: fallbackHeading,
+        markdown: preface,
+      });
+    }
+  }
+
+  for (let i = 0; i < uniqueHeadings.length; i++) {
+    const start = uniqueHeadings[i].startLine;
+    const end =
+      i + 1 < uniqueHeadings.length
+        ? uniqueHeadings[i + 1].startLine
+        : lines.length;
+    sections.push({
+      heading: uniqueHeadings[i].heading || fallbackHeading,
+      markdown: lines.slice(start, end).join("\n"),
+    });
+  }
+
+  return sections;
+}
+
+function deriveMarkdownSections(meta: Meta, document: Document): Document {
+  const hasMarkdown = hasFormatOfType(meta.options.formats, "markdown");
+  if (!hasMarkdown || !document.markdown) {
+    return document;
+  }
+
+  const markdown = document.markdown;
+  if (markdown.trim().length === 0) {
+    return document;
+  }
+
+  const fallbackHeading =
+    document.title ?? document.metadata.title ?? "Untitled";
+  const sections = splitMarkdownByHeadings(markdown, fallbackHeading);
+
+  document.sections = sections.map(section => ({
+    markdown: section.markdown,
+    metadata: {
+      ...document.metadata,
+      section_heading: section.heading,
+    },
+  }));
+
+  return document;
+}
+
 // TODO: allow some of these to run in parallel
 const transformerStack: Transformer[] = [
   deriveHTMLFromRawHTML,
@@ -434,6 +561,7 @@ const transformerStack: Transformer[] = [
   deriveDiff,
   coerceFieldsToFormats,
   removeBase64Images,
+  deriveMarkdownSections,
 ];
 
 export async function executeTransformers(

@@ -750,6 +750,7 @@ const scrapeRequestSchemaBase = baseScrapeOptions.extend({
   origin: z.string().optional().prefault("api"),
   integration: integrationSchema.optional().transform(val => val || null),
   zeroDataRetention: z.boolean().optional(),
+  optimizedScrapeOutput: z.boolean().prefault(false),
   __agentInterop: z
     .object({
       auth: z.string(),
@@ -777,6 +778,7 @@ export type ScrapeRequestInput = Omit<
   origin?: string;
   integration?: z.input<typeof integrationSchema> | null;
   zeroDataRetention?: boolean;
+  optimizedScrapeOutput?: boolean;
 };
 
 const batchScrapeRequestSchemaBase = baseScrapeOptions.extend({
@@ -943,6 +945,74 @@ export const mapRequestSchema = strictWithMessage(mapRequestSchemaBase);
 export type MapRequest = z.infer<typeof mapRequestSchema>;
 export type MapRequestInput = z.input<typeof mapRequestSchema>;
 
+export type DocumentMetadata = {
+  title?: string;
+  description?: string;
+  language?: string;
+  keywords?: string;
+  robots?: string;
+  section_heading?: string;
+  ogTitle?: string;
+  ogDescription?: string;
+  ogUrl?: string;
+  ogImage?: string;
+  ogAudio?: string;
+  ogDeterminer?: string;
+  ogLocale?: string;
+  ogLocaleAlternate?: string[];
+  ogSiteName?: string;
+  ogVideo?: string;
+  favicon?: string;
+  dcTermsCreated?: string;
+  dcDateCreated?: string;
+  dcDate?: string;
+  dcTermsType?: string;
+  dcType?: string;
+  dcTermsAudience?: string;
+  dcTermsSubject?: string;
+  dcSubject?: string;
+  dcDescription?: string;
+  dcTermsKeywords?: string;
+  modifiedTime?: string;
+  publishedTime?: string;
+  articleTag?: string;
+  articleSection?: string;
+  url?: string;
+  sourceURL?: string;
+  statusCode: number;
+  scrapeId?: string;
+  error?: string;
+  numPages?: number;
+  contentType?: string;
+  timezone?: string;
+  proxyUsed: "basic" | "stealth";
+  cacheState?: "hit" | "miss";
+  cachedAt?: string;
+  creditsUsed?: number;
+  postprocessorsUsed?: string[];
+  indexId?: string; // ID used to store the document in the index (GCS)
+  concurrencyLimited?: boolean;
+  concurrencyQueueDurationMs?: number;
+  // [key: string]: string | string[] | number | { smartScrape: number; other: number; total: number } | undefined;
+};
+
+export type OptimizedScrapeItem = {
+  id: string;
+  section_heading: string;
+  header: string;
+  content: string;
+  title: string;
+  documentId: string;
+  sectionId: string;
+  source_url: string;
+};
+
+export type OptimizedScrapeResponse = {
+  url: string;
+  count: number;
+  items: OptimizedScrapeItem[];
+};
+
 export type Document = {
   title?: string;
   description?: string;
@@ -956,6 +1026,10 @@ export type Document = {
   extract?: any;
   json?: any;
   summary?: string;
+  sections?: {
+    markdown: string;
+    metadata: DocumentMetadata;
+  }[];
   branding?: BrandingProfile;
   warning?: string;
   attributes?: {
@@ -998,55 +1072,7 @@ export type Document = {
     };
     json?: any;
   };
-  metadata: {
-    title?: string;
-    description?: string;
-    language?: string;
-    keywords?: string;
-    robots?: string;
-    ogTitle?: string;
-    ogDescription?: string;
-    ogUrl?: string;
-    ogImage?: string;
-    ogAudio?: string;
-    ogDeterminer?: string;
-    ogLocale?: string;
-    ogLocaleAlternate?: string[];
-    ogSiteName?: string;
-    ogVideo?: string;
-    favicon?: string;
-    dcTermsCreated?: string;
-    dcDateCreated?: string;
-    dcDate?: string;
-    dcTermsType?: string;
-    dcType?: string;
-    dcTermsAudience?: string;
-    dcTermsSubject?: string;
-    dcSubject?: string;
-    dcDescription?: string;
-    dcTermsKeywords?: string;
-    modifiedTime?: string;
-    publishedTime?: string;
-    articleTag?: string;
-    articleSection?: string;
-    url?: string;
-    sourceURL?: string;
-    statusCode: number;
-    scrapeId?: string;
-    error?: string;
-    numPages?: number;
-    contentType?: string;
-    timezone?: string;
-    proxyUsed: "basic" | "stealth";
-    cacheState?: "hit" | "miss";
-    cachedAt?: string;
-    creditsUsed?: number;
-    postprocessorsUsed?: string[];
-    indexId?: string; // ID used to store the document in the index (GCS)
-    concurrencyLimited?: boolean;
-    concurrencyQueueDurationMs?: number;
-    // [key: string]: string | string[] | number | { smartScrape: number; other: number; total: number } | undefined;
-  };
+  metadata: DocumentMetadata;
   serpResults?: {
     title: string;
     description: string;
@@ -1068,7 +1094,8 @@ export type ScrapeResponse =
       warning?: string;
       data: Document;
       scrape_id?: string;
-    };
+    }
+  | OptimizedScrapeResponse;
 
 export interface URLTrace {
   url: string;

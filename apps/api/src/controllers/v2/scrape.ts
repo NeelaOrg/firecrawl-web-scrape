@@ -1,9 +1,11 @@
 import { Response } from "express";
+import crypto from "crypto";
 import { config } from "../../config";
 import { logger as _logger } from "../../lib/logger";
 import {
   Document,
   FormatObject,
+  OptimizedScrapeResponse,
   RequestWithAuth,
   ScrapeRequest,
   scrapeRequestSchema,
@@ -20,6 +22,99 @@ import { ScrapeJobData } from "../../types";
 import { teamConcurrencySemaphore } from "../../services/worker/team-semaphore";
 import { getJobPriority } from "../../lib/job-priority";
 import { logRequest } from "../../services/logging/log_job";
+
+type OptimizedSection = {
+  heading: string;
+  markdown: string;
+};
+
+function md5Hash(value: string): string {
+  return crypto.createHash("md5").update(value).digest("hex");
+}
+
+function stripLeadingHeading(markdown: string): string {
+  const lines = markdown.split(/\r?\n/);
+  if (lines.length === 0) {
+    return "";
+  }
+
+  if (/^(#{1,2})\s+/.test(lines[0])) {
+    return lines.slice(1).join("\n").trim();
+  }
+
+  if (lines.length > 1 && /^\s*(=+|-+)\s*$/.test(lines[1])) {
+    return lines.slice(2).join("\n").trim();
+  }
+
+  return markdown.trim();
+}
+
+function buildOptimizedSections(document: Document): OptimizedSection[] {
+  if (document.sections && document.sections.length > 0) {
+    return document.sections.map(section => ({
+      heading:
+        section.metadata.section_heading ??
+        document.title ??
+        document.metadata.title ??
+        "Untitled",
+      markdown: section.markdown,
+    }));
+  }
+
+  if (document.markdown && document.markdown.trim().length > 0) {
+    return [
+      {
+        heading:
+          document.title ?? document.metadata.title ?? "Untitled",
+        markdown: document.markdown,
+      },
+    ];
+  }
+
+  return [];
+}
+
+function buildOptimizedScrapeResponse(
+  document: Document,
+  requestedUrl?: string,
+): OptimizedScrapeResponse {
+  const sourceUrl =
+    document.metadata.sourceURL ??
+    document.metadata.url ??
+    document.url ??
+    requestedUrl ??
+    "";
+
+  const title =
+    document.title ??
+    document.metadata.title ??
+    document.metadata.ogTitle ??
+    "";
+  const header =
+    document.description ??
+    document.metadata.description ??
+    document.metadata.ogDescription ??
+    "";
+
+  const documentId = md5Hash(sourceUrl);
+  const sections = buildOptimizedSections(document);
+  const items = sections.map(section => ({
+    id: uuidv7(),
+    section_heading: section.heading,
+    header,
+    content: stripLeadingHeading(section.markdown),
+    title,
+    documentId,
+    sectionId: uuidv7(),
+    source_url: sourceUrl,
+  }));
+
+  return {
+    url: sourceUrl,
+    count: items.length,
+    items,
+  };
+}
 
 export async function scrapeController(
   req: RequestWithAuth<{}, ScrapeResponse, ScrapeRequest>,
@@ -371,6 +466,12 @@ export async function scrapeController(
         concurrencyLimited,
         concurrencyQueueDurationMs: lockTime || undefined,
       });
+
+      if (req.body.optimizedScrapeOutput) {
+        return res
+          .status(200)
+          .json(buildOptimizedScrapeResponse(doc!, preNormalizedBody.url));
+      }
 
       return res.status(200).json({
         success: true,

@@ -341,20 +341,29 @@ async function runActions(page: Page, actions: Action[], timeout: number) {
           throw new Error('wait action requires milliseconds or selector');
         }
         break;
-      case 'click':
-        if (action.all) {
-          await page.waitForSelector(action.selector, { timeout });
-          const elements = await page.$$(action.selector);
-          if (elements.length === 0) {
-            throw new Error(`No elements found for selector: ${action.selector}`);
+      case 'click': {
+        try {
+          if (action.all) {
+            await page.waitForSelector(action.selector, { timeout });
+            const elements = await page.$$(action.selector);
+            if (elements.length === 0) {
+              throw new Error(`No elements found for selector: ${action.selector}`);
+            }
+            for (const element of elements) {
+              await element.click();
+            }
+          } else {
+            await page.click(action.selector, { timeout });
           }
-          for (const element of elements) {
-            await element.click();
+        } catch (error) {
+          if (isTimeoutError(error)) {
+            console.warn(`Action click timed out, skipping selector: ${action.selector}`);
+            break;
           }
-        } else {
-          await page.click(action.selector, { timeout });
+          throw error;
         }
         break;
+      }
       case 'scroll': {
         const direction = action.direction ?? 'down';
         if (action.selector) {
@@ -400,6 +409,14 @@ async function runActions(page: Page, actions: Action[], timeout: number) {
         assertNever(action);
     }
   }
+}
+
+function isTimeoutError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const candidate = error as { name?: string; message?: string };
+  return candidate.name === "TimeoutError" || candidate.message?.includes("Timeout") === true;
 }
 
 const assertNever = (value: never): never => {

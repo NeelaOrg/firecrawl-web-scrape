@@ -74,6 +74,49 @@ const AD_SERVING_DOMAINS = [
   'amazon-adsystem.com'
 ];
 
+type Action =
+  | {
+      type: 'wait';
+      milliseconds?: number;
+      selector?: string;
+    }
+  | {
+      type: 'click';
+      selector: string;
+      all?: boolean;
+    }
+  | {
+      type: 'scroll';
+      direction?: 'up' | 'down';
+      selector?: string;
+    }
+  | {
+      type: 'write';
+      text: string;
+    }
+  | {
+      type: 'press';
+      key: string;
+    }
+  | {
+      type: 'executeJavascript';
+      script: string;
+    }
+  | {
+      type: 'screenshot';
+      fullPage?: boolean;
+      quality?: number;
+    }
+  | {
+      type: 'scrape';
+    }
+  | {
+      type: 'pdf';
+      landscape?: boolean;
+      scale?: number;
+      format?: string;
+    };
+
 interface UrlModel {
   url: string;
   wait_after_load?: number;
@@ -81,6 +124,7 @@ interface UrlModel {
   headers?: { [key: string]: string };
   check_selector?: string;
   skip_tls_verification?: boolean;
+  actions?: Action[];
 }
 
 let browser: Browser;
@@ -160,7 +204,15 @@ const isValidUrl = (urlString: string): boolean => {
   }
 };
 
-const scrapePage = async (page: Page, url: string, waitUntil: 'load' | 'networkidle', waitAfterLoad: number, timeout: number, checkSelector: string | undefined) => {
+const scrapePage = async (
+  page: Page,
+  url: string,
+  waitUntil: 'load' | 'networkidle',
+  waitAfterLoad: number,
+  timeout: number,
+  checkSelector: string | undefined,
+  actions: Action[] = [],
+) => {
   console.log(`Navigating to ${url} with waitUntil: ${waitUntil} and timeout: ${timeout}ms`);
   const response = await page.goto(url, { waitUntil, timeout });
 
@@ -175,6 +227,12 @@ const scrapePage = async (page: Page, url: string, waitUntil: 'load' | 'networki
       throw new Error('Required selector not found');
     }
   }
+
+  if (actions.length > 0) {
+    await runActions(page, actions, timeout);
+  }
+
+  await injectMediaLinksInDom(page, url);
 
   let headers = null, content = await page.content();
   let ct: string | undefined = undefined;
@@ -192,6 +250,160 @@ const scrapePage = async (page: Page, url: string, waitUntil: 'load' | 'networki
     headers,
     contentType: ct,
   };
+};
+
+async function injectMediaLinksInDom(page: Page, baseUrl: string): Promise<void> {
+  await page.evaluate(base => {
+    const iframes = Array.from(
+      document.querySelectorAll("iframe[src]"),
+    ) as HTMLIFrameElement[];
+    const headings = Array.from(
+      document.querySelectorAll("h1, h2, h3, h4"),
+    ) as HTMLElement[];
+    const getScopedHeadings = (
+      frame: HTMLIFrameElement,
+      fallback: HTMLElement[],
+    ): HTMLElement[] => {
+      let container = frame.parentElement;
+      while (container) {
+        const scoped = Array.from(
+          container.querySelectorAll("h1, h2, h3, h4"),
+        ) as HTMLElement[];
+        if (scoped.length > 0) {
+          return scoped;
+        }
+        container = container.parentElement;
+      }
+      return fallback;
+    };
+
+    for (const frame of iframes) {
+      if (frame.getAttribute("data-firecrawl-media-linked") === "true") {
+        continue;
+      }
+
+      const src = frame.getAttribute("src");
+      if (!src) {
+        continue;
+      }
+
+      let resolved: string | null = null;
+      try {
+        resolved = new URL(src, base).href;
+      } catch (_) {
+        resolved = null;
+      }
+
+      if (!resolved) {
+        continue;
+      }
+
+      const link = document.createElement("a");
+      link.href = resolved;
+      link.textContent = resolved;
+      link.setAttribute("data-firecrawl-media-link", "true");
+
+      const scopedHeadings = getScopedHeadings(frame, headings);
+      const previousHeading = scopedHeadings
+        .filter(
+          heading =>
+            (frame.compareDocumentPosition(heading) &
+              Node.DOCUMENT_POSITION_PRECEDING) !==
+            0,
+        )
+        .pop();
+      const nextHeading = scopedHeadings.find(
+        heading =>
+          (frame.compareDocumentPosition(heading) &
+            Node.DOCUMENT_POSITION_FOLLOWING) !==
+          0,
+      );
+
+      if (!previousHeading && nextHeading) {
+        nextHeading.insertAdjacentElement("afterend", link);
+      } else {
+        frame.insertAdjacentElement("afterend", link);
+      }
+      frame.setAttribute("data-firecrawl-media-linked", "true");
+    }
+  }, baseUrl);
+}
+
+async function runActions(page: Page, actions: Action[], timeout: number) {
+  for (const action of actions) {
+    switch (action.type) {
+      case 'wait':
+        if (action.milliseconds !== undefined) {
+          await page.waitForTimeout(action.milliseconds);
+        } else if (action.selector) {
+          await page.waitForSelector(action.selector, { timeout });
+        } else {
+          throw new Error('wait action requires milliseconds or selector');
+        }
+        break;
+      case 'click':
+        if (action.all) {
+          await page.waitForSelector(action.selector, { timeout });
+          const elements = await page.$$(action.selector);
+          if (elements.length === 0) {
+            throw new Error(`No elements found for selector: ${action.selector}`);
+          }
+          for (const element of elements) {
+            await element.click();
+          }
+        } else {
+          await page.click(action.selector, { timeout });
+        }
+        break;
+      case 'scroll': {
+        const direction = action.direction ?? 'down';
+        if (action.selector) {
+          const handle = await page.$(action.selector);
+          if (!handle) {
+            throw new Error(`No element found for selector: ${action.selector}`);
+          }
+          await handle.evaluate(
+            (el, dir) => {
+              if (dir === 'down') {
+                (el as HTMLElement).scrollTop = (el as HTMLElement).scrollHeight;
+              } else {
+                (el as HTMLElement).scrollTop = 0;
+              }
+            },
+            direction,
+          );
+        } else {
+          await page.evaluate(dir => {
+            if (dir === 'down') {
+              window.scrollTo(0, document.body.scrollHeight);
+            } else {
+              window.scrollTo(0, 0);
+            }
+          }, direction);
+        }
+        break;
+      }
+      case 'write':
+        await page.keyboard.type(action.text);
+        break;
+      case 'press':
+        await page.keyboard.press(action.key);
+        break;
+      case 'executeJavascript':
+        await page.evaluate(script => (0, eval)(script), action.script);
+        break;
+      case 'screenshot':
+      case 'scrape':
+      case 'pdf':
+        throw new Error(`Unsupported action type: ${action.type}`);
+      default:
+        assertNever(action);
+    }
+  }
+}
+
+const assertNever = (value: never): never => {
+  throw new Error(`Unsupported action type: ${JSON.stringify(value)}`);
 };
 
 app.get('/health', async (req: Request, res: Response) => {
@@ -220,7 +432,15 @@ app.get('/health', async (req: Request, res: Response) => {
 });
 
 app.post('/scrape', async (req: Request, res: Response) => {
-  const { url, wait_after_load = 0, timeout = 15000, headers, check_selector, skip_tls_verification = false }: UrlModel = req.body;
+  const {
+    url,
+    wait_after_load = 0,
+    timeout = 15000,
+    headers,
+    check_selector,
+    skip_tls_verification = false,
+    actions = [],
+  }: UrlModel = req.body;
 
   console.log(`================= Scrape Request =================`);
   console.log(`URL: ${url}`);
@@ -229,6 +449,7 @@ app.post('/scrape', async (req: Request, res: Response) => {
   console.log(`Headers: ${headers ? JSON.stringify(headers) : 'None'}`);
   console.log(`Check Selector: ${check_selector ? check_selector : 'None'}`);
   console.log(`Skip TLS Verification: ${skip_tls_verification}`);
+  console.log(`Actions: ${actions.length}`);
   console.log(`==================================================`);
 
   if (!url) {
@@ -260,7 +481,15 @@ app.post('/scrape', async (req: Request, res: Response) => {
       await page.setExtraHTTPHeaders(headers);
     }
 
-    const result = await scrapePage(page, url, 'load', wait_after_load, timeout, check_selector);
+    const result = await scrapePage(
+      page,
+      url,
+      'load',
+      wait_after_load,
+      timeout,
+      check_selector,
+      actions,
+    );
     const pageError = result.status !== 200 ? getError(result.status) : undefined;
 
     if (!pageError) {

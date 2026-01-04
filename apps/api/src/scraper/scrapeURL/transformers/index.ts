@@ -450,7 +450,7 @@ function splitMarkdownByHeadings(
       continue;
     }
 
-    const atxMatch = line.match(/^(#{1,2})\s+(.+?)\s*#*\s*$/);
+    const atxMatch = line.match(/^(#{1,4})\s+(.+?)\s*#*\s*$/);
     if (atxMatch) {
       headings.push({
         startLine: i,

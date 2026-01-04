@@ -19,6 +19,9 @@ export async function scrapeURLWithPlaywright(
       timeout: meta.abort.scrapeTimeout(),
       headers: meta.options.headers,
       skip_tls_verification: meta.options.skipTlsVerification,
+      ...(meta.options.actions && meta.options.actions.length > 0
+        ? { actions: meta.options.actions }
+        : {}),
     },
     method: "POST",
     logger: meta.logger.child("scrapeURLWithPlaywright/robustFetch"),
@@ -48,5 +51,15 @@ export async function scrapeURLWithPlaywright(
 }
 
 export function playwrightMaxReasonableTime(meta: Meta): number {
-  return (meta.options.waitFor ?? 0) + 30000;
+  const actionWait =
+    meta.options.actions?.reduce((acc, action) => {
+      if (action.type === "wait") {
+        return (
+          acc + (action.milliseconds ?? (action.selector ? 1000 : 0))
+        );
+      }
+      return acc + 250;
+    }, 0) ?? 0;
+
+  return (meta.options.waitFor ?? 0) + actionWait + 30000;
 }

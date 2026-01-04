@@ -350,7 +350,7 @@ const engineOptions: {
   },
   playwright: {
     features: {
-      actions: false,
+      actions: true,
       waitFor: true,
       screenshot: false,
       "screenshot@fullScreen": false,
